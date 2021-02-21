@@ -4,7 +4,8 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import asyncio, aiohttp
 
-async def get_soup(url: str, session: aiohttp.ClientSession, attempts=2, try_after=30):
+
+async def get_soup(url: str, session: aiohttp.ClientSession, attempts=3, try_after=30):
     logging.debug(f"Getting {url}")
 
     for i in range(attempts):
@@ -136,7 +137,7 @@ def get_num_pages(page_soup: BeautifulSoup):
         num_pages = 1
     return num_pages
 
-async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession, threadsWriter: FileWriter, num_pages=None, max_pages: int=2):
+async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession, threadsWriter: FileWriter, num_pages=None, max_pages: int=2, batch_size: int=50):
     logging.info(f"Started topic {topic_url}")
     if num_pages:
         logging.info(f"{topic_url} has {num_pages} pages")
@@ -168,6 +169,10 @@ async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession,
     for page in range(1, min(num_pages, max_pages)+1):
         task = asyncio.create_task(process_page_task(f"{topic_url}page-{page}"))
         tasks.append(task)
+        
+        if len(tasks) >= batch_size:
+            await asyncio.gather(*tasks)
+
     await asyncio.gather(*tasks)    
 
     logging.info(f"Finished topic {topic_url}, collected {len(threads)} threads")
@@ -175,6 +180,7 @@ async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession,
 
     return topic_name, len(threads)
 
+# NOTE: when the thread has a lot of posts → explode in memory
 async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession, fileWriter: FileWriter=None, count: dict=None, max_pages: int=2, tracker: Tracker=None):
     posts = []
 
@@ -198,6 +204,15 @@ async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession,
         thread_soup = await get_soup(thread_url, session)
     except aiohttp.ClientResponseError as e:
         logging.error(e)
+        if e.status == 404:
+            logging.error(f"Thread {thread_url} no longer exists")
+            if tracker:
+                tracker.tracker[topic]["threads"].add(thread_url)
+                tracker.save()
+        else:
+            logging.error(f"Error loading thread {thread_url}")
+        return None
+    except:
         logging.error(f"Error loading thread {thread_url}")
         return None
     
@@ -231,7 +246,7 @@ async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession,
         count["posts"] += len(posts)
     return len(posts)
 
-async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, path, max_pages=2, tracker: Tracker=None):
+async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, path, max_pages=2, tracker: Tracker=None, batch_size: int=50):
     file_path = os.path.join(path, f"{topic}.txt")
     postsWriter = FileWriter(file_path)
 
@@ -239,12 +254,18 @@ async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, 
     
     count = {"posts": 0}
     tasks = []
+    
     for th in threads:
         if not tracker or th not in tracker.tracker[topic]["threads"]:
             task = asyncio.create_task(get_posts(th, topic, session, fileWriter=postsWriter, count=count, max_pages=max_pages, tracker=tracker))
             tasks.append(task)
-    await asyncio.gather(*tasks)
+            
+            # to avoid spawning too many tasks when there are too many threads for the topic
+            if len(tasks) >= batch_size:
+                await asyncio.gather(*tasks)
+                tracker.save()
     
+    await asyncio.gather(*tasks)
     tracker.tracker[topic]["finished"] = True
     tracker.save()
     logging.info(f"Finished topic {topic}")
