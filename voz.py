@@ -1,122 +1,181 @@
+import os, requests, logging, re, time
+from typing import List
+from requests.models import HTTPError, Request
 from bs4 import BeautifulSoup
-from urllib.request import urlopen
-import os
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
-import time
+import threading, concurrent.futures
 
-# TODO: pass in a driver, don't create a new browser instance
-def get_topics(url, driver):
+MAX_WORKER = 8
+
+def get_soup(url: str):
+    logging.debug(f"Getting {url}")
+    local_thread = threading.local()
+    if not hasattr(local_thread, "session"):
+        local_thread.session = requests.Session()
+
+    response = local_thread.session.get(url)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, "lxml")
+        return soup
+    else:
+        response.raise_for_status()
+
+class SyncFileWriter:
+    def __init__(self, file: str):
+        self.file = file
+        self.lock = threading.Lock()
+    
+    def write(self, item: str):
+        with self.lock:
+            with open(self.file, "a", encoding="utf-8") as f:
+                f.write(item)
+                f.write("\n")
+
+    def write_list(self, items: List[str]):
+        with self.lock:
+            
+            logging.debug(f"Writing to {self.file}")
+            with open(self.file, "a", encoding="utf-8") as f:
+                for i in items:
+                    f.write(i)
+                    f.write("\n")
+            
+
+    def write_topic_of_threads(self, topic: str, threads: List[str]):
+        with self.lock:
+            logging.debug(f"Writing to {self.file}")
+            with open(self.file, "a", encoding="utf-8") as f:
+                f.write("TOPIC ")
+                f.write(topic)
+                f.write("\n")
+                for th in threads:
+                    f.write(th)
+                    f.write("\n")
+
+    def write_thread_of_posts(self, thread: str, posts: List[str]):
+        with self.lock:
+            logging.debug(f"Writing to {self.file}")
+            with open(self.file, "a", encoding="utf-8") as f:
+                f.write("THREAD\n")
+                f.write(thread)
+                f.write("\n")
+                for p in posts:
+                    f.write(p)
+                    f.write("\n")
+
+def get_topics(url: str):
+    try:
+        soup = get_soup(url)
+    except HTTPError as e:
+        logging.error(e)
+        return None
+
     topics = []
-
-    driver.get(url)
-    topics.extend([x.get_attribute("href") for x in driver.find_elements_by_css_selector(".node-title > a")])
-
+    titles = soup.find_all("h3", class_="node-title")
+    for t in titles:
+        links = [f"{url}{x['href']}" for x in t.find_all("a")]
+        topics.extend(links)
+    
     return topics
 
-def get_rooms(topic_url, driver, max_pages=10):
-    rooms = []
+def get_threads(topic_url: str, host: str, max_pages: int=2):
+    threads = []
+    count = 0
+    url = topic_url
 
-    driver.get(topic_url)
-    rooms.extend([x.get_attribute("href") for x in driver.find_elements_by_css_selector(".structItem-title > a")])
-    
-    # go to the next page
-    count = 1
-    try:
-        next_button = driver.find_element_by_css_selector(".pageNav-jump--next")
-    except:
-        next_button = None
-    while next_button and count < max_pages:
-        next_button.click()
+    while True:
         count += 1
-
-        rooms.extend([x.get_attribute("href") for x in driver.find_elements_by_css_selector(".structItem-title > a")])
-
         try:
-            next_button = driver.find_element_by_css_selector(".pageNav-jump--next")
-        except:
-            next_button = None
+            topic_soup = get_soup(url)
+        except HTTPError as e:
+            logging.error(e)
+            break
+
+        links = topic_soup.find_all("a", attrs={"data-tp-primary": "on"})
+        links = [f"{host}{x['href']}" for x in links]
+        threads.extend(links)
         
-    return rooms
+        next_button = topic_soup.find("a", class_="pageNav-jump--next")
+        if next_button and count < max_pages:
+            url = f"{host}{next_button['href']}"
+        else:
+            break
+ 
+    return threads
 
-def get_texts(room_url, driver, max_pages=10):
-    texts = []
+def get_posts(thread_url: str, host: str, max_pages: int=2):
+    posts = []
+    count = 0
+    url = thread_url
 
-    def process_convo(forum_post):
-        forum_post = BeautifulSoup(forum_post.get_property("outerHTML"), 'html.parser').div.findAll(text=True, recursive=False)
-        forum_post = [sentence.strip() for sentence in forum_post]
-        forum_post = '\n'.join(forum_post)
-        return forum_post
+    def process_post(post):
+        for script in post.find_all("script"):
+            script.decompose()
+        for reply in post.find_all("blockquote"):
+            reply.decompose()
+        for link in post.find_all("a"):
+            link.decompose()
 
-    driver.get(room_url)
-    convo = driver.find_elements_by_css_selector("div.bbWrapper")
-    convo = [process_convo(x) for x in convo]
-    texts.extend(convo)
-    
-    # go to next page
-    count = 1
-    try:
-        next_button = driver.find_element_by_css_selector(".pageNav-jump--next")
-    except:
-        next_button = None
-    while next_button and count < max_pages:
-        next_button.click()
+        post = post.find_all(text=True)
+        post = " ".join(post).strip()
+        post = re.sub(r"\n+", " ", post)
+        post = re.sub(r"\s+", " ", post)
+        return post
+
+    while True:
         count += 1
-
-        convo = driver.find_elements_by_css_selector("div.bbWrapper")
-        convo = [process_convo(x) for x in convo]
-        texts.extend(convo)
-
         try:
-            next_button = driver.find_element_by_css_selector(".pageNav-jump--next")
-        except:
-            next_button = None
-    
-    return texts
-
-if __name__ == "__main__":
-    current_dir = os.getcwd()
-    geckodriver_path = os.path.join(current_dir, "geckodriver.exe")
-    url = "https://voz.vn/"
-    time0 = time.time()
-
-    options = Options()
-    options.headless = True
-    with webdriver.Firefox(options=options, executable_path=geckodriver_path) as driver:
-        print("Getting voz.vn topics")
-        topics = get_topics(url, driver)
-        print("Finished getting all voz.vn topics")
-        print(f"Took {time.time()-time0:.0f} seconds")
-        time0 = time.time()
-        print()
-
-        print("Getting voz.vn rooms")
-        rooms = []
-
-        # TODO: multi-threading
-        for topic_url in topics[:3]:
-            rooms.extend(get_rooms(topic_url, driver, max_pages=1))
-            print(f"Rooms scraped: {len(rooms)}", end="\r")
+            thread_soup = get_soup(url)
+        except HTTPError as e:
+            logging.error(e)
+            break
         
-        print(f"Rooms scraped: {len(rooms)}")
-        print("Finished getting voz.vn rooms")
-        print(f"Took {time.time()-time0:.0f} seconds")
-        time0 = time.time()
-        print()
+        post_containers = thread_soup.find_all("div", class_="bbWrapper")
+        for p in post_containers:
+            p = process_post(p)
+            if p:
+                posts.append(p)
 
-        print("Writting forum threads to file")
-        with open("voz_data.txt", "w", encoding="utf-8") as f:
-            lines = 0
-            for room_url in rooms:
-                texts = get_texts(room_url, driver, max_pages=1)
-                for text in texts:
-                    lines += 1
-                    f.write("NEW POST\n")
-                    f.write(text)
-                    f.write("\n")
-                    print(f"Wrote {lines} lines", end="\r")
+        next_button = thread_soup.find("a", class_="pageNav-jump--next")
+        if next_button and count < max_pages:
+            url = f"{host}{next_button['href']}"
+        else:
+            break
+    
+    return posts
 
-        print(f"Wrote {lines} lines")
-        print("Finished writting to file")
-        print(f"Took {time.time()-time0:.0f} seconds")
-        print()
+def write_topics(filename, dir, host, force=False):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    
+    file_path = os.path.join(dir, filename)
+    if not os.path.exists(file_path) or force:
+        topics = get_topics(host)
+        with open(file_path, "w", encoding="utf-8") as f:
+            for t in topics:
+                f.write(t)
+                f.write("\n")
+    
+
+def write_posts_for_topic(topic, host, threads, folder, max_pages=2):
+    file_path = os.path.join(folder, f"{topic}.txt")
+    postsWriter = SyncFileWriter(file_path)
+
+    num_posts = 0
+    logging.info(f"Started topic {topic}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKER) as executor:
+        futures = {}
+        for th in threads:
+            future = executor.submit(get_posts, thread_url=th, host=host, max_pages=max_pages)
+            futures[future] = th
+
+        for future in concurrent.futures.as_completed(futures):
+            posts = future.result()
+            num_posts += len(posts)
+            postsWriter.write_thread_of_posts(futures[future], posts)
+    
+    logging.info(f"Finished topic {topic}")
+    logging.info(f"Obtained {num_posts} posts for topic {topic}")
+
+    return topic, num_posts
+
+

@@ -1,5 +1,5 @@
-env/
+__pycache__/
 .vscode/
 .ipynb_checkpoints/
-gecko*
-*_data.txt
+voz*/
+logging*.log
