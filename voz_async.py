@@ -61,9 +61,9 @@ class FileWriter:
                 f.write("\n")
 
 class Tracker:
-    def __init__(self, path):
+    def __init__(self, path, name="tracker"):
         self.path = path
-        self.file_path = os.path.join(path, "tracker.pkl")
+        self.file_path = os.path.join(path, f"{name}.pkl")
         self.tracker = {}
 
         if not os.path.exists(path):
@@ -102,6 +102,7 @@ async def get_topics(url: str, session: aiohttp.ClientSession, path, refresh=Fal
             soup = await get_soup(url, session)
         except aiohttp.ClientResponseError as e:
             logging.error(e)
+            logging.error(f"Unable to get topics")
             return None
 
         topics = []
@@ -113,7 +114,7 @@ async def get_topics(url: str, session: aiohttp.ClientSession, path, refresh=Fal
                     topic_soup = await get_soup(l, session)
                 except aiohttp.ClientResponseError as e:
                     logging.error(e)
-                    logging.error(f"Failed to get {l}")
+                    logging.error(f"Failed to get {l}. Skipping it")
                     continue
                 num_pages = get_num_pages(topic_soup)
                 topics.append((l, num_pages))
@@ -207,13 +208,14 @@ async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession,
         if e.status == 404:
             logging.error(f"Thread {thread_url} no longer exists")
             if tracker:
+                # marked this thread as finished so that it won't visit again
                 tracker.tracker[topic]["threads"].add(thread_url)
-                tracker.save()
+                # tracker.save()
         else:
-            logging.error(f"Error loading thread {thread_url}")
+            logging.error(f"Error loading thread {thread_url}. Skipping it")
         return None
     except:
-        logging.error(f"Error loading thread {thread_url}")
+        logging.error(f"Error loading thread {thread_url}. Skipping it")
         return None
     
     # get number of pages for this topic
@@ -263,7 +265,7 @@ async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, 
             # to avoid spawning too many tasks when there are too many threads for the topic
             if len(tasks) >= batch_size:
                 await asyncio.gather(*tasks)
-                tracker.save()
+                # tracker.save()
     
     await asyncio.gather(*tasks)
     tracker.tracker[topic]["finished"] = True
@@ -273,28 +275,34 @@ async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, 
 
     return topic, count["posts"]
 
-async def main_write_all_threads(max_pages=float("inf")):
+async def main_write_all_threads(max_pages=float("inf"), refresh_topics=False):
     host = "https://voz.vn"
     threadsWriter = FileWriter("./voz_async/threads.txt")
+    thread_tracker = Tracker("./voz_async/", name="thread_tracker")
     if not os.path.exists("./voz_async/"):
         os.makedirs("./voz_async/")
 
-    time0 = time.time()
     total_threads = 0
     total_topics = 0
 
     connector = aiohttp.TCPConnector(limit_per_host=20)
     timeout = aiohttp.ClientTimeout(total=0)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        topics = await get_topics(host, session, "./voz_async/")
+        topics = await get_topics(host, session, "./voz_async/", refresh=refresh_topics)
         
         for t, num_pages in topics:
+            # there should be a tracker of which topic is finished → to support resume failed operation
+            if t in thread_tracker.tracker:
+                continue
+        
             _, num_threads = await get_threads(t, host, session, threadsWriter, num_pages=num_pages, max_pages=max_pages)
+            
+            thread_tracker.tracker[t] = True
+            thread_tracker.save()
             total_threads += num_threads
             total_topics += 1
             logging.info(f"Total threads collected: {total_threads}. Total topics processed: {total_topics}")
 
-    logging.info(f"Took {time.time()-time0:.02f}s")
 
 async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
     host = "https://voz.vn" 
@@ -302,7 +310,6 @@ async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
     posts_path = "./voz_async/posts/"
     tracker = Tracker("./voz_async/posts/")
 
-    time0 = time.time()
     total_posts = 0
 
     connector = aiohttp.TCPConnector(limit_per_host=20)
@@ -333,7 +340,6 @@ async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
                 if total_posts >= max_posts:
                     break
 
-    logging.info(f"Took {time.time()-time0:.02f}s")
 
 async def test():
     async with aiohttp.ClientSession() as session:
