@@ -138,7 +138,7 @@ def get_num_pages(page_soup: BeautifulSoup):
         num_pages = 1
     return num_pages
 
-async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession, threadsWriter: FileWriter, num_pages=None, max_pages: int=2, batch_size: int=50):
+async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession, threadsWriter: FileWriter, num_pages=None, max_pages: int=2, batch_size: int=100):
     logging.info(f"Started topic {topic_url}")
     if num_pages:
         logging.info(f"{topic_url} has {num_pages} pages")
@@ -160,6 +160,7 @@ async def get_threads(topic_url: str, host: str, session: aiohttp.ClientSession,
             page_soup = await get_soup(url, session)
         except aiohttp.ClientResponseError as e:
             logging.error(e)
+            logging.error(f"Error loading page {url}. Skipping this page")
             return
 
         links = page_soup.find_all("a", attrs={"data-tp-primary": "on"})
@@ -228,10 +229,13 @@ async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession,
             posts.append(p)
 
     for page in range(2, min(max_pages, num_pages)+1):
+        page_url = f"{thread_url}page-{page}"
         try:
-            page_soup = await get_soup(f"{thread_url}page-{page}", session)
+            page_soup = await get_soup(page_url, session)
         except aiohttp.ClientResponseError as e:
             logging.error(e)
+            logging.error(f"Unable to load page {page_url}. Skipping this page")
+            continue
 
         post_containers = page_soup.find_all("div", class_="bbWrapper")
         for p in post_containers:
@@ -248,7 +252,7 @@ async def get_posts(thread_url: str, topic: str, session: aiohttp.ClientSession,
         count["posts"] += len(posts)
     return len(posts)
 
-async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, path, max_pages=2, tracker: Tracker=None, batch_size: int=50):
+async def write_posts_for_topic(topic, threads, session: aiohttp.ClientSession, path, max_pages=2, tracker: Tracker=None, batch_size: int=100):
     file_path = os.path.join(path, f"{topic}.txt")
     postsWriter = FileWriter(file_path)
 

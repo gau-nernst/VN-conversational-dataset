@@ -23,8 +23,8 @@ Using `conda`
 conda create -n env python=3.8
 conda activate env
 
-conda install aiohttp beautifulsoup4
-conda install -c conda-forge cchardet, aiodns, brotlipy
+conda install aiohttp beautifulsoup4 lxml
+conda install -c conda-forge cchardet aiodns brotlipy
 ```
 
 Using `pip`
