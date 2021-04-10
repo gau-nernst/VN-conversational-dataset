@@ -1,11 +1,12 @@
 import os, logging, re, time, pickle
-from typing import List, Dict
+from typing import List, Tuple, Dict
 from datetime import datetime
+import bs4
 from bs4 import BeautifulSoup
 import asyncio, aiohttp
 
 
-async def get_soup(url: str, session: aiohttp.ClientSession, attempts=3, try_after=30):
+async def get_soup(url: str, session: aiohttp.ClientSession, attempts=3, try_after=30) -> bs4.element.Tag:
     logging.debug(f"Getting {url}")
 
     for i in range(attempts):
@@ -41,57 +42,69 @@ class FileWriter:
 
     def write_topic_of_threads(self, topic: str, threads: List[str]):
         with open(self.file, "a", encoding="utf-8") as f:
-            f.write("TOPIC ")
-            f.write(topic)
-            f.write(" ")
-            f.write(str(len(threads)))
-            f.write("\n")
+            f.write(f"TOPIC {topic} {len(threads)}\n")
             for th, num_pages in threads:
-                f.write(th)
-                f.write(" ")
-                f.write(str(num_pages))
-                f.write("\n")
+                f.write(f"{th} {num_pages}\n")
 
     def write_thread_of_posts(self, thread: str, posts: List[str]):
         with open(self.file, "a", encoding="utf-8") as f:
-            f.write("THREAD ")
-            f.write(thread)
-            f.write(" ")
-            f.write(str(len(posts)))
-            f.write("\n")
+            f.write(f"THREAD {thread} {len(posts)}\n")
             for p in posts:
                 f.write(p)
                 f.write("\n")
 
-# Tracker will fail if the program closes while saving
-# use json instead?
 class Tracker:
     def __init__(self, path, name="tracker"):
-        self.path = path
-        self.type = type
-        self.file_path = os.path.join(path, f"{name}.pkl")
+        self.file_path = os.path.join(path, f"{name}.txt")
         self.tracker = set()
+        self.new_items = []
 
         if not os.path.exists(path):
             os.makedirs(path)
         
         if os.path.exists(self.file_path):
             logging.info("Tracker exists on disk. Loading tracker from disk")
-            with open(self.file_path, "rb") as f:
-                self.tracker = pickle.load(f)
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                self.tracker = set([line.rstrip() for line in f])
 
     def add(self, item: str):
         self.tracker.add(item)
+        self.new_items.append(item)
 
     def check(self, item: str):
         return item in self.tracker
 
     def save(self):
-        with open(self.file_path, "wb") as f:
-            pickle.dump(self.tracker, f)
+        with open(self.file_path, "a", encoding="utf-8") as f:
+            for item in self.new_items:
+                f.write(item)
+                f.write("\n")
+        self.new_items = []
 
+def process_post(post: bs4.element.Tag, return_list=False) -> str:
+    # remove unwanted elements
+    for elem in post.find_all(["blockquote", "img", "script", "a"]):
+        elem.decompose()
 
-async def get_topics(url: str, session: aiohttp.ClientSession, path, refresh=False):
+    # simple cleaning
+    post = post.find_all(text=True)
+    post = [text.strip().strip("\u200b") for text in post if not (text.isspace() or text == "\u200b")]
+    post = ["START_POST"] + post
+    if return_list:
+        return post
+    else:
+        return "\n".join(post)
+
+def get_num_pages(page_soup: bs4.element.Tag) -> int:
+    nav = page_soup.find("ul", class_="pageNav-main")
+    if nav:
+        nav_items = [x for x in nav.find_all("li")]
+        num_pages = int(nav_items[-1].find("a").get_text())
+    else:
+        num_pages = 1
+    return num_pages
+
+async def get_topics(url: str, session: aiohttp.ClientSession, path, refresh=False) -> List[Tuple[str, int]]:
     file_path = os.path.join(path, "topics.txt")
     if not os.path.exists(path):
         os.makedirs(path)
@@ -131,24 +144,13 @@ async def get_topics(url: str, session: aiohttp.ClientSession, path, refresh=Fal
                 num_pages = get_num_pages(topic_soup)
                 topics.append((l, num_pages))
         
+        # sort topics by number of pages
         topics.sort(key=lambda x: x[1])
         with open(file_path, "w", encoding="utf-8") as f:
             for t, num_pages in topics:
-                f.write(t)
-                f.write(" ")
-                f.write(str(num_pages))
-                f.write("\n")
+                f.write(f"{t} {num_pages}\n")
         
         return topics
-
-def get_num_pages(page_soup: BeautifulSoup):
-    nav = page_soup.find("ul", class_="pageNav-main")
-    if nav:
-        nav_items = [x for x in nav.find_all("li")]
-        num_pages = int(nav_items[-1].find("a").get_text())
-    else:
-        num_pages = 1
-    return num_pages
 
 async def get_threads(topic: str, host: str, session: aiohttp.ClientSession, threadsWriter: FileWriter, num_pages: int, max_pages: int=2, num_concurrent: int=100):
     logging.info(f"Started topic {topic} with {num_pages} pages")
@@ -196,18 +198,6 @@ async def get_threads(topic: str, host: str, session: aiohttp.ClientSession, thr
 
 async def get_posts(thread: str, topic: str, host: str, session: aiohttp.ClientSession, fileWriter: FileWriter, num_pages:int, count: dict=None, max_pages: int=2, postTracker: Tracker=None):
     posts = []
-
-    def process_post(post):
-        # remove unwanted elements
-        for elem in post.find_all(True, class_=["script", "blockquote", "a"]):
-            elem.decompose()
-
-        # simple cleaning
-        post = post.find_all(text=True)
-        post = " ".join(post).strip()
-        post = re.sub(r"\n+", " ", post)
-        post = re.sub(r"\s+", " ", post)
-        return post
 
     for page in range(1, min(max_pages, num_pages)+1):
         page_url = f"{host}{thread}page-{page}"
@@ -265,12 +255,12 @@ async def write_posts_for_topic(topic, threads, host, session: aiohttp.ClientSes
 
     return topic, count["posts"]
 
-async def main_write_all_threads(max_pages=float("inf"), refresh_topics=False):
+async def main_write_all_threads(directory="./voz_async/", max_pages=float("inf"), refresh_topics=False):
     host = "https://voz.vn"
-    threadsWriter = FileWriter("./voz_async/threads.txt")
-    threadTracker = Tracker("./voz_async/", name="thread_tracker")
-    if not os.path.exists("./voz_async/"):
-        os.makedirs("./voz_async/")
+    threadsWriter = FileWriter(os.path.join(directory, "threads.txt"))
+    threadTracker = Tracker(directory, name="thread_tracker")
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
     total_threads = 0
     total_topics = 0
@@ -278,7 +268,7 @@ async def main_write_all_threads(max_pages=float("inf"), refresh_topics=False):
     connector = aiohttp.TCPConnector(limit_per_host=20)
     timeout = aiohttp.ClientTimeout(total=0)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        topics = await get_topics(host, session, "./voz_async/", refresh=refresh_topics)
+        topics = await get_topics(host, session, directory, refresh=refresh_topics)
         
         for t, num_pages in topics:
             # there should be a tracker of which topic is finished → to support resume failed operation
@@ -294,11 +284,11 @@ async def main_write_all_threads(max_pages=float("inf"), refresh_topics=False):
             logging.info(f"Total threads collected: {total_threads}. Total topics processed: {total_topics}")
 
 
-async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
+async def main_write_posts(directory="./voz_async/", max_pages=float("inf"), max_posts=float("inf")):
     host = "https://voz.vn"
-    threads_file = "./voz_async/threads.txt"
-    posts_path = "./voz_async/posts/"
-    topicTracker = Tracker("./voz_async/posts/", name="topic_tracker")
+    threads_file = os.path.join(directory, "threads.txt")
+    posts_path = os.path.join(directory, "posts/")
+    topicTracker = Tracker(posts_path, name="topic_tracker")
     postTrackers = {}
 
     total_posts = 0
@@ -325,7 +315,7 @@ async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
               
                 if topic not in postTrackers:
                     topic_clean = topic.split('/')[-2]
-                    postTrackers[topic_clean] = Tracker("./voz_async/posts/", name=f"{topic_clean}_tracker")
+                    postTrackers[topic_clean] = Tracker(posts_path, name=f"{topic_clean}_tracker")
 
                 # submit all threads of 1 topic to process
                 _, num_posts = await write_posts_for_topic(topic, threads, host, session, posts_path, max_pages=max_pages, postTracker=postTrackers[topic_clean])
@@ -337,12 +327,7 @@ async def main_write_posts(max_pages=float("inf"), max_posts=float("inf")):
                     break
 
 async def test():
-    async with aiohttp.ClientSession() as session:
-        topics = await get_topics("https://voz.vn", session, "./voz_async50/")
-        for t in topics:
-            topic_soup = await get_soup(t, session)
-            num_pages = get_num_pages(topic_soup)
-            print(t, num_pages)
+    return
 
 if __name__ == "__main__":
     now = datetime.now()
@@ -356,6 +341,7 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    asyncio.run(main_write_all_threads())
-    asyncio.run(main_write_posts())
+    DIRECTORY = "./voz_async_03042021/"
+    asyncio.run(main_write_all_threads(directory=DIRECTORY))
+    asyncio.run(main_write_posts(directory=DIRECTORY))
     # asyncio.run(test())
