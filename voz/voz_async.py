@@ -255,7 +255,7 @@ async def write_posts_for_topic(topic, threads, host, session: aiohttp.ClientSes
 
     return topic, count["posts"]
 
-async def main_write_all_threads(directory="./voz_async/", max_pages=float("inf"), refresh_topics=False):
+async def main_write_all_threads(directory="./data", max_pages=float("inf"), refresh_topics=False):
     host = "https://voz.vn"
     threadsWriter = FileWriter(os.path.join(directory, "threads.txt"))
     threadTracker = Tracker(directory, name="thread_tracker")
@@ -284,7 +284,7 @@ async def main_write_all_threads(directory="./voz_async/", max_pages=float("inf"
             logging.info(f"Total threads collected: {total_threads}. Total topics processed: {total_topics}")
 
 
-async def main_write_posts(directory="./voz_async/", max_pages=float("inf"), max_posts=float("inf")):
+async def main_write_posts(directory="./data", max_pages=float("inf"), max_posts=float("inf")):
     host = "https://voz.vn"
     threads_file = os.path.join(directory, "threads.txt")
     posts_path = os.path.join(directory, "posts/")
@@ -341,7 +341,7 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    DIRECTORY = "./voz_async_03042021/"
+    DIRECTORY = "./data_03042021/"
     asyncio.run(main_write_all_threads(directory=DIRECTORY))
     asyncio.run(main_write_posts(directory=DIRECTORY))
     # asyncio.run(test())

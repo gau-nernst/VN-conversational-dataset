@@ -1,6 +1,6 @@
 __pycache__/
 .vscode/
 .ipynb_checkpoints/
-voz*/
-logging*.log
+data/
+*.log
 .pytest_cache/

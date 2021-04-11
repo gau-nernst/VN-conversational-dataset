@@ -11,6 +11,16 @@ Forums:
 - http://f319.com/
 - https://diendan.hocmai.vn/
 
+News sites:
+
+- https://vnexpress.net/
+- https://dantri.com.vn/
+- https://vietnamnet.vn/
+- https://thanhnien.vn/
+- https://tuoitre.vn/
+- https://cafef.vn/
+- https://genk.vn/
+
 ## Dependencies
 
 - aiohttp
