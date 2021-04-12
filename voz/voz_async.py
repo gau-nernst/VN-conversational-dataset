@@ -5,6 +5,15 @@ import bs4
 from bs4 import BeautifulSoup
 import asyncio, aiohttp
 
+# hack to import from parent directory
+import sys
+current_dir = os.path.dirname(os.path.realpath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+del current_dir
+del parent_dir
+
+from utils import Tracker
 
 async def get_soup(url: str, session: aiohttp.ClientSession, attempts=3, try_after=30) -> bs4.element.Tag:
     logging.debug(f"Getting {url}")
@@ -53,33 +62,6 @@ class FileWriter:
                 f.write(p)
                 f.write("\n")
 
-class Tracker:
-    def __init__(self, path, name="tracker"):
-        self.file_path = os.path.join(path, f"{name}.txt")
-        self.tracker = set()
-        self.new_items = []
-
-        if not os.path.exists(path):
-            os.makedirs(path)
-        
-        if os.path.exists(self.file_path):
-            logging.info("Tracker exists on disk. Loading tracker from disk")
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                self.tracker = set([line.rstrip() for line in f])
-
-    def add(self, item: str):
-        self.tracker.add(item)
-        self.new_items.append(item)
-
-    def check(self, item: str):
-        return item in self.tracker
-
-    def save(self):
-        with open(self.file_path, "a", encoding="utf-8") as f:
-            for item in self.new_items:
-                f.write(item)
-                f.write("\n")
-        self.new_items = []
 
 def process_post(post: bs4.element.Tag, return_list=False) -> str:
     # remove unwanted elements
